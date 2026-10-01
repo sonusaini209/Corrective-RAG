@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask your document</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 600px; margin: 40px auto; padding: 0 16px; }
+  input[type=text] { width: 70%; padding: 8px; }
+  button { padding: 8px 16px; }
+  .box { margin-bottom: 24px; }
+  #answer { margin-top: 20px; white-space: pre-wrap; }
+  #info, #status { color: gray; font-size: 14px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <h2>Ask your document</h2>
+
+  <div class="box">
+    <input type="file" id="file" accept=".pdf,.txt">
+    <button onclick="upload()">Upload</button>
+    <div id="status">Upload a PDF or TXT file first.</div>
+  </div>
+
+  <div class="box">
+    <input type="text" id="q" placeholder="Ask a question...">
+    <button onclick="ask()">Ask</button>
+    <div id="answer"></div>
+    <div id="info"></div>
+  </div>
+
+<script>
+let docId = null;
+
+async function upload() {
+  const file = document.getElementById("file").files[0];
+  if (!file) return alert("Choose a file first");
+  const status = document.getElementById("status");
+  status.textContent = "Reading document...";
+
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/upload", { method: "POST", body: form });
+  const data = await res.json();
+
+  if (!res.ok) { status.textContent = data.detail; return; }
+  docId = data.doc_id;
+  status.textContent = "Ready: " + file.name + " (" + data.chunks + " chunks). Ask away.";
+}
+
+async function ask() {
+  if (!docId) return alert("Upload a document first");
+  const answer = document.getElementById("answer");
+  answer.textContent = "Thinking...";
+  document.getElementById("info").textContent = "";
+
+  const res = await fetch("/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: document.getElementById("q").value, doc_id: docId })
+  });
+  const data = await res.json();
+
+  if (!res.ok) { answer.textContent = data.detail; return; }
+  answer.textContent = data.answer;
+  document.getElementById("info").textContent = "Verdict: " + data.verdict;
+}
+</script>
+</body>
+</html>
