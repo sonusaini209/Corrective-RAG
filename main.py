@@ -1,12 +1,12 @@
-import re
+import re, os, uuid, tempfile
 from typing import List, TypedDict
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -19,19 +19,17 @@ from config import llm  # your existing config.py (defines `llm`)
 
 load_dotenv()
 
-# ---------- Index (built once at startup) ----------
-docs = PyPDFLoader("the-metamorphosis.pdf").load()
-chunks = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=150).split_documents(docs)
-for d in chunks:
-    d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")
+# ---------- Index (built per uploaded document) ----------
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-retriever = FAISS.from_documents(chunks, embeddings).as_retriever(search_kwargs={"k": 4})
+splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=150)
+RETRIEVERS = {}  # doc_id -> retriever (in memory)
 
 UPPER_TH, LOWER_TH = 0.7, 0.3
 
 
 class State(TypedDict, total=False):
     question: str
+    doc_id: str
     docs: List[Document]
     good_docs: List[Document]
     verdict: str
@@ -45,7 +43,7 @@ class State(TypedDict, total=False):
 
 # ---------- Retrieve ----------
 def retrieve_node(state: State):
-    return {"docs": retriever.invoke(state["question"])}
+    return {"docs": RETRIEVERS[state["doc_id"]].invoke(state["question"])}
 
 
 # ---------- Evaluate each chunk ----------
@@ -196,18 +194,46 @@ app = FastAPI(title="CRAG API")
 
 class Ask(BaseModel):
     question: str
+    doc_id: str
+
+
+@app.post("/upload")
+def upload(file: UploadFile = File(...)):
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in (".pdf", ".txt"):
+        raise HTTPException(400, "Upload a .pdf or .txt file")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(file.file.read())
+    try:
+        loader = PyPDFLoader(tmp.name) if ext == ".pdf" else TextLoader(tmp.name, encoding="utf-8")
+        chunks = splitter.split_documents(loader.load())
+    finally:
+        os.remove(tmp.name)
+
+    for d in chunks:
+        d.page_content = d.page_content.encode("utf-8", "ignore").decode("utf-8", "ignore")
+    chunks = [d for d in chunks if d.page_content.strip()]
+    if not chunks:
+        raise HTTPException(400, "No text found (scanned PDFs are not supported)")
+
+    doc_id = uuid.uuid4().hex
+    RETRIEVERS[doc_id] = FAISS.from_documents(chunks, embeddings).as_retriever(search_kwargs={"k": 4})
+    return {"doc_id": doc_id, "chunks": len(chunks)}
 
 
 @app.post("/ask")
-def ask(body: Ask):  # sync def -> runs in threadpool, doesn't block server
-    res = crag.invoke({"question": body.question, "docs": [], "good_docs": [],
-                       "web_docs": [], "kept_strips": []})
+def ask(body: Ask):
+    if body.doc_id not in RETRIEVERS:
+        raise HTTPException(404, "Document not found. Upload it again.")
+    res = crag.invoke({"question": body.question, "doc_id": body.doc_id, "docs": [],
+                       "good_docs": [], "web_docs": [], "kept_strips": []})
     return {
         "answer": res["answer"],
         "verdict": res["verdict"],
         "reason": res["reason"],
         "web_query": res.get("web_query", ""),
-        "sources": [d.metadata.get("url") for d in res["web_docs"]] if res.get("web_docs") else [],
+        "sources": [d.metadata.get("url") for d in res.get("web_docs", [])],
     }
 
 
