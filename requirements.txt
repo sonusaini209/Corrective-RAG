@@ -3,6 +3,7 @@ uvicorn[standard]
 python-dotenv
 pydantic
 pypdf
+python-multipart
 faiss-cpu
 sentence-transformers
 langchain
