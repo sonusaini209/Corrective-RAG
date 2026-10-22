@@ -1,1 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corrective RAG</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 680px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+  input[type=text] { width: 70%; padding: 8px; }
+  button { padding: 8px 16px; }
+  .box { margin-bottom: 24px; }
+  #answer { margin-top: 20px; white-space: pre-wrap; }
+  #status { color: gray; font-size: 14px; margin-top: 10px; }
+  #info { margin-top: 16px; font-size: 14px; color: #444; }
+  #info div { margin-bottom: 4px; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; color: #fff; font-size: 12px; }
+  .CORRECT { background: #2e7d32; } .AMBIGUOUS { background: #ef6c00; } .INCORRECT { background: #c62828; }
+</style>
+</head>
+<body>
+  <h2>Ask your document</h2>
+
+  <div class="box">
+    <input type="file" id="file" accept=".pdf,.txt">
+    <button id="uploadBtn">Upload</button>
+    <div id="status">Upload a PDF or TXT file first.</div>
+  </div>
+
+  <div class="box">
+    <input type="text" id="q" placeholder="Ask a question...">
+    <button id="askBtn">Ask</button>
+    <div id="answer"></div>
+    <div id="info"></div>
+  </div>
+
+<script>
+let docId = null;
+const $ = (id) => document.getElementById(id);
+
+async function call(url, options) {
+  const res = await fetch(url, options);
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok) {
+    const d = data && data.detail;
+    throw new Error(typeof d === "string" ? d : "Request failed (" + res.status + ")");
+  }
+  return data;
+}
+
+async function upload() {
+  const file = $("file").files[0];
+  if (!file) return alert("Choose a file first");
+  $("status").textContent = "Reading document...";
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const data = await call("/upload", { method: "POST", body: form });
+    docId = data.doc_id;
+    $("status").textContent = "Ready: " + file.name + " (" + data.chunks + " chunks). Ask away.";
+  } catch (e) {
+    $("status").textContent = e.message;
+  }
+}
+
+function line(label, text) {
+  const div = document.createElement("div");
+  const b = document.createElement("b");
+  b.textContent = label + ": ";
+  div.append(b, document.createTextNode(text));
+  return div;
+}
+
+async function ask() {
+  if (!docId) return alert("Upload a document first");
+  const question = $("q").value.trim();
+  if (!question) return;
+  $("answer").textContent = "Thinking...";
+  $("info").replaceChildren();
+  try {
+    const d = await call("/ask", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, doc_id: docId })
+    });
+    $("answer").textContent = d.answer;
+
+    const info = $("info");
+    const v = document.createElement("div");
+    const tag = document.createElement("span");
+    tag.className = "tag " + d.verdict;
+    tag.textContent = d.verdict;
+    v.append(tag, document.createTextNode(" " + d.reason));
+    info.append(v);
+    if (d.scores.length) info.append(line("Chunk scores", d.scores.join(", ")));
+    if (d.web_query) info.append(line("Web query", d.web_query));
+    if (d.doc_sources.length)
+      info.append(line("Document", d.doc_sources.map(s => s.file + (s.page != null ? " p." + (s.page + 1) : "")).join("; ")));
+    d.web_sources.filter(Boolean).forEach(u => {
+      const div = document.createElement("div");
+      const a = document.createElement("a");
+      a.href = u; a.textContent = u; a.target = "_blank"; a.rel = "noopener noreferrer";
+      div.append(a);
+      info.append(div);
+    });
+  } catch (e) {
+    $("answer").textContent = e.message;
+  }
+}
+
+$("uploadBtn").addEventListener("click", upload);
+$("askBtn").addEventListener("click", ask);
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") ask(); });
+</script>
+</body>
+</html>
 
